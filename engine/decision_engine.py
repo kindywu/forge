@@ -224,52 +224,63 @@ class DecisionEngine:
         """
         枚举候选动作并用模型预测结果。
 
-        候选动作的生成策略：
-          - 对每个电极，在当前深度基础上尝试 ±1cm, ±2cm, ±4cm
-          - 三相组合太多，先只调最有影响力的那相（电流最高的那相）
+        候选策略：
+          1. 单相微调：每相 ±1/±2/±4 cm（精细调节）
+          2. 单相大步：每相 ±8 cm（较大修正）
+          3. 三相联动：所有相同时 ±4/±8 cm（整体升/降）
         """
         candidates = []
+        seen_actions = set()  # 去重
 
-        # 找出当前电流最高的相（优先调它）
-        currents = {
-            "a": current_state.get("current_a", 120),
-            "b": current_state.get("current_b", 120),
-            "c": current_state.get("current_c", 120),
-        }
-        # 使用完整列名作为键
         current_depths = {
             "electrode_depth_a": current_state.get("electrode_depth_a", 1.2),
             "electrode_depth_b": current_state.get("electrode_depth_b", 1.2),
             "electrode_depth_c": current_state.get("electrode_depth_c", 1.2),
         }
+        phases = list(current_depths.keys())
 
-        # 尝试调节幅度（cm → m）
-        steps_cm = [-4, -2, -1, 0, 1, 2, 4]
-        steps_m = [s / 100 for s in steps_cm]
+        def try_action(action: dict):
+            key = tuple(sorted(action.items()))
+            if key in seen_actions:
+                return
+            seen_actions.add(key)
+            # 检查是否超出物理范围
+            for ph in phases:
+                if action[ph] < 0.8 or action[ph] > 1.8:
+                    return
+            pred = self._predict_action(action, current_state, history_df)
+            if pred is None:
+                return
+            candidates.append(ActionCandidate(
+                action=dict(action),
+                predicted_intermediate=pred["intermediate"],
+                predicted_pf=pred["power_factor"],
+                predicted_energy=pred["energy_per_ton"],
+            ))
 
-        for phase in ["electrode_depth_a", "electrode_depth_b", "electrode_depth_c"]:
-            for step in steps_m:
-                if step == 0:
-                    continue  # 不动就不试了
+        # 策略1：单相微调 ±1/±2/±4 cm
+        for step_cm in [-4, -2, -1, 1, 2, 4]:
+            step_m = step_cm / 100
+            for ph in phases:
+                action = dict(current_depths)
+                action[ph] = round(current_depths[ph] + step_m, 4)
+                try_action(action)
 
-                new_depth = current_depths[phase] + step
-                if new_depth < 0.8 or new_depth > 1.8:
-                    continue  # 超出物理范围直接跳过
+        # 策略2：单相大步 ±8 cm
+        for step_cm in [-8, 8]:
+            step_m = step_cm / 100
+            for ph in phases:
+                action = dict(current_depths)
+                action[ph] = round(current_depths[ph] + step_m, 4)
+                try_action(action)
 
-                action = dict(current_depths)  # 从当前深度出发
-                action[phase] = new_depth
-
-                # 用模型预测这个动作的结果
-                pred = self._predict_action(action, current_state, history_df)
-                if pred is None:
-                    continue
-
-                candidates.append(ActionCandidate(
-                    action=action,
-                    predicted_intermediate=pred["intermediate"],
-                    predicted_pf=pred["power_factor"],
-                    predicted_energy=pred["energy_per_ton"],
-                ))
+        # 策略3：三相联动 ±4/±8/±12 cm（应对所有相都过深/过浅的场景）
+        for step_cm in [-12, -8, -4, 4, 8, 12]:
+            step_m = step_cm / 100
+            action = {}
+            for ph in phases:
+                action[ph] = round(current_depths[ph] + step_m, 4)
+            try_action(action)
 
         return candidates
 

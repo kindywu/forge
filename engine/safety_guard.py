@@ -111,12 +111,12 @@ class SafetyGuard:
                         f"电极{phase.upper()}深度 {depth:.2f}m > 安全上限 {self.limits.electrode_depth_max}m"
                     )
 
-        # 2. 检查单次调节幅度（防止突变）
+        # 2. 检查单次调节幅度（防止突变），加小epsilon避免浮点精度问题
         for phase in ["a", "b", "c"]:
             depth_key = f"electrode_depth_{phase}"
             if depth_key in action and depth_key in current_state:
                 step = abs(action[depth_key] - current_state[depth_key]) * 100  # 转cm
-                if step > self.limits.electrode_max_step_cm:
+                if step > self.limits.electrode_max_step_cm + 1e-9:
                     violations.append(
                         f"电极{phase.upper()}单次调节幅度 {step:.1f}cm > 限制 {self.limits.electrode_max_step_cm}cm"
                     )

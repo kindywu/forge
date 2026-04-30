@@ -115,10 +115,11 @@ def main():
 
     guard = SafetyGuard(SafetyLimits(
         current_rated_ka=140.0,
-        current_max_ratio=0.90,
+        current_max_ratio=0.95,         # 演示用：允许到 133kA
         electrode_depth_min=0.8,
         electrode_depth_max=1.8,
         imbalance_max=5.0,
+        electrode_max_step_cm=12.0,     # 演示用：允许单次最多 12cm
     ))
     engine = DecisionEngine(model, guard)
 
