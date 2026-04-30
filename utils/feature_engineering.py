@@ -35,16 +35,19 @@ PF_TARGET_HIGH = 0.93
 def build_features_for_model1(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     模型一的特征和标签：
-      输入X = 驱动层特征（电极操作 + 原料）
+      输入X = 驱动层特征（电极操作 + 原料）—— 仅原始值，不加滞后/滚动
       输出Y = 中间状态（电气参数 + 炉况）
+
+    注意：模型一代表瞬时因果链（驱动 → 中间状态），不应加入驱动列
+    的滞后/滚动特征，否则模型会依赖历史模式而忽略当前驱动值的因果效应，
+    导致反事实仿真（如"改变电极深度"）时预测结果几乎不变。
 
     返回 (X, Y)
     """
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
-    df = _add_lag_rolling_features(df, cols=DRIVE_COLS, windows=[3, 6, 12])
     df = _add_time_features(df)
 
-    # X：所有驱动特征（原始 + 滞后 + 滚动 + 时间）
+    # X：驱动层原始值 + 时间特征（不加滞后/滚动，保持因果性）
     feature_cols = [c for c in df.columns if c not in INTERMEDIATE_COLS + RESULT_COLS + ["timestamp"]]
     X = df[feature_cols].dropna()
     Y = df.loc[X.index, INTERMEDIATE_COLS]
@@ -102,6 +105,10 @@ def build_inference_features(
     """
     # 把当前行拼到历史尾部，然后取最后一行的特征
     combined = pd.concat([history_df, current_row.to_frame().T], ignore_index=True)
+    # 确保数值列保持数值类型（concat 可能把 float 列变成 object）
+    for col in combined.columns:
+        if col != "timestamp":
+            combined[col] = pd.to_numeric(combined[col], errors="coerce")
     combined["timestamp"] = pd.to_datetime(
         combined["timestamp"] if "timestamp" in combined.columns
         else pd.date_range(end=pd.Timestamp.now(), periods=len(combined), freq="h")

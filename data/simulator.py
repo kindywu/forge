@@ -60,14 +60,17 @@ def generate_furnace_data(n_hours: int = 2000, seed: int = 42) -> pd.DataFrame:
 
     # ── 第二层：中间状态（由驱动因素决定 + 噪声）──────────────────
 
-    # 平均电极深度
+    # 平均电极深度（用于整体炉况特征）
     avg_depth = (df["electrode_depth_a"] + df["electrode_depth_b"] + df["electrode_depth_c"]) / 3
 
-    # 三相电流（kA），电极越深→电流越大，正常范围 100~140 kA
-    base_current = 100 + (avg_depth - 0.8) / (1.8 - 0.8) * 40
-    df["current_a"] = base_current + np.random.normal(0, 3, n_hours)
-    df["current_b"] = base_current + np.random.normal(0, 3, n_hours)
-    df["current_c"] = base_current + np.random.normal(0, 3, n_hours)
+    # 三相电流（kA），每相电流主要由该相电极深度决定，叠加耦合效应
+    for phase in ["a", "b", "c"]:
+        depth_col = f"electrode_depth_{phase}"
+        current_col = f"current_{phase}"
+        other_phases = [p for p in ["a", "b", "c"] if p != phase]
+        other_avg = df[[f"electrode_depth_{p}" for p in other_phases]].mean(axis=1)
+        effective_depth = 0.7 * df[depth_col] + 0.3 * other_avg
+        df[current_col] = 100 + (effective_depth - 0.8) / (1.8 - 0.8) * 40 + np.random.normal(0, 2, n_hours)
     for col in ["current_a", "current_b", "current_c"]:
         df[col] = df[col].clip(90, 150)
 
@@ -80,8 +83,9 @@ def generate_furnace_data(n_hours: int = 2000, seed: int = 42) -> pd.DataFrame:
     df["imbalance"] = depth_std * 10 + np.random.exponential(0.5, n_hours)
     df["imbalance"] = df["imbalance"].clip(0, 8)
 
-    # 反应区温度（°C）
-    df["reaction_temp"] = 1800 + (base_current - 100) * 2 + np.random.normal(0, 30, n_hours)
+    # 反应区温度（°C），使用平均电流
+    avg_current = (df["current_a"] + df["current_b"] + df["current_c"]) / 3
+    df["reaction_temp"] = 1800 + (avg_current - 100) * 2 + np.random.normal(0, 30, n_hours)
     df["reaction_temp"] = df["reaction_temp"].clip(1600, 2000)
 
     # 炉内气相压力（Pa）

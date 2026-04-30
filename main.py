@@ -51,6 +51,29 @@ def main():
           f"最小={df['energy_per_ton'].min():.0f}  "
           f"最大={df['energy_per_ton'].max():.0f} kWh/t")
 
+    # 打印训练数据样例（参考 demo.py 的结构）
+    pd.set_option('display.max_columns', 25)
+    pd.set_option('display.width', 300)
+    pd.set_option('display.float_format', '{:.4f}'.format)
+    pd.set_option('display.max_colwidth', 12)
+
+    print("\n===== 原始数据前 5 行（三层结构：驱动层 + 中间状态 + 结果指标）=====")
+    print(df.head(5))
+
+    from utils.feature_engineering import build_features_for_model1, build_features_for_model2
+    X1, Y1 = build_features_for_model1(df)
+    X2, Y2 = build_features_for_model2(df)
+
+    print(f"\n===== 模型一训练输入 X1: {X1.shape}（特征）=====")
+    print(X1.head(5))
+    print(f"\n===== 模型一训练标签 Y1: {Y1.shape}（中间状态）=====")
+    print(Y1.head(5))
+
+    print(f"\n===== 模型二训练输入 X2: {X2.shape}（特征）=====")
+    print(X2.head(5))
+    print(f"\n===== 模型二训练标签 Y2: {Y2.shape}（结果指标）=====")
+    print(Y2.head(5))
+
     # ── Step 2: 训练两段模型 ──────────────────────────────────────
     print("\n【Step 2】训练两段机器学习模型...")
     model = TwoStageModel()

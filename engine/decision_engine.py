@@ -141,6 +141,7 @@ class DecisionEngine:
 
         # ── 步骤④：安全拦截 ─────────────────────────────────────
         safe_candidates = []
+        rejection_reasons: Dict[str, int] = {}
         for c in candidates:
             c.safety_result = self.safety_guard.check(
                 action=c.action,
@@ -150,7 +151,12 @@ class DecisionEngine:
             if c.safety_result.passed:
                 safe_candidates.append(c)
             else:
-                print(f"  [安全拦截] 候选方案被拒绝：{c.safety_result.violations[0]}")
+                reason = c.safety_result.violations[0]
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+
+        if rejection_reasons:
+            for reason, count in rejection_reasons.items():
+                print(f"  [安全拦截] {count} 个候选方案被拒绝：{reason}")
 
         if not safe_candidates:
             print(f"  ⚠ 所有候选方案均未通过安全检查，转人工")
@@ -230,18 +236,18 @@ class DecisionEngine:
             "b": current_state.get("current_b", 120),
             "c": current_state.get("current_c", 120),
         }
-        # 如果功率因数偏低，尝试调整电流最不平衡的那相
+        # 使用完整列名作为键
         current_depths = {
-            "a": current_state.get("electrode_depth_a", 1.2),
-            "b": current_state.get("electrode_depth_b", 1.2),
-            "c": current_state.get("electrode_depth_c", 1.2),
+            "electrode_depth_a": current_state.get("electrode_depth_a", 1.2),
+            "electrode_depth_b": current_state.get("electrode_depth_b", 1.2),
+            "electrode_depth_c": current_state.get("electrode_depth_c", 1.2),
         }
 
         # 尝试调节幅度（cm → m）
         steps_cm = [-4, -2, -1, 0, 1, 2, 4]
         steps_m = [s / 100 for s in steps_cm]
 
-        for phase in ["a", "b", "c"]:
+        for phase in ["electrode_depth_a", "electrode_depth_b", "electrode_depth_c"]:
             for step in steps_m:
                 if step == 0:
                     continue  # 不动就不试了
@@ -259,7 +265,7 @@ class DecisionEngine:
                     continue
 
                 candidates.append(ActionCandidate(
-                    action={f"electrode_depth_{k}": v for k, v in action.items()},
+                    action=action,
                     predicted_intermediate=pred["intermediate"],
                     predicted_pf=pred["power_factor"],
                     predicted_energy=pred["energy_per_ton"],
@@ -272,18 +278,39 @@ class DecisionEngine:
     ) -> Optional[dict]:
         """
         给定一个动作（电极深度配置），用两段模型预测结果。
+        使用完整的 build_inference_features() 构造特征，确保滞后/滚动特征正确。
         """
         try:
-            # 构造模型一的输入（驱动特征）
-            drive_row = {**current_state, **{f"electrode_depth_{k}": v for k, v in action.items()}}
-            drive_df = pd.DataFrame([drive_row])
+            from utils.feature_engineering import build_inference_features, DRIVE_COLS
+            from datetime import timedelta
 
-            # 对于推理，简化处理：直接用当前状态作为基础，只改变电极深度
-            # 真实部署时应调用 build_inference_features() 构造完整特征
-            X1 = self._build_simple_drive_features(drive_row, history_df)
+            # 构造候选行：用当前状态做基础，覆盖电极深度，历史值补齐缺失列
+            candidate = dict(current_state)
+            for k, v in action.items():
+                candidate[k] = v
+            # 补全 current_state 中缺失的驱动列（从历史最后一行取）
+            for col in DRIVE_COLS:
+                if col not in candidate or candidate[col] is None:
+                    if col in history_df.columns:
+                        candidate[col] = history_df[col].iloc[-1]
+                    else:
+                        candidate[col] = 0.0
+            candidate_row = pd.Series(candidate)
+
+            # 给候选行一个合理的时间戳（历史最后一行 + 1 小时）
+            last_ts = pd.to_datetime(history_df["timestamp"].iloc[-1])
+            candidate_row["timestamp"] = last_ts + timedelta(hours=1)
+
+            # 模型一：驱动特征 → 中间状态
+            X1 = build_inference_features(candidate_row, history_df, mode="model1")
             intermediate_pred = self.model.predict_intermediate(X1)
 
-            X2 = pd.concat([X1, intermediate_pred], axis=1)
+            # 用模型一的预测结果更新候选行，再送入模型二
+            for col in intermediate_pred.columns:
+                candidate_row[col] = float(intermediate_pred[col].iloc[0])
+
+            # 模型二：驱动 + 中间状态 → 结果指标
+            X2 = build_inference_features(candidate_row, history_df, mode="model2")
             result_pred = self.model.predict_result(X2)
 
             return {
@@ -292,6 +319,8 @@ class DecisionEngine:
                 "intermediate": intermediate_pred.iloc[0].to_dict(),
             }
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return None
 
     def _build_simple_drive_features(self, state: dict, history_df: pd.DataFrame) -> pd.DataFrame:

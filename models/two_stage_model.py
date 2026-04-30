@@ -7,22 +7,26 @@
 每个"多输出"模型实际上是对每个目标列分别训练一个LightGBM，
 这样可以针对每个输出调参，也方便单独评估精度。
 """
+
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_percentage_error, mean_absolute_error, r2_score
+from sklearn.metrics import (
+    mean_absolute_percentage_error,
+    mean_absolute_error,
+    r2_score,
+)
 import pickle
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 import warnings
+
 warnings.filterwarnings("ignore")
 
 from utils.feature_engineering import (
-    INTERMEDIATE_COLS, RESULT_COLS,
-    build_features_for_model1, build_features_for_model2
+    build_features_for_model1,
+    build_features_for_model2,
 )
-
 
 # LightGBM 超参数（工控机友好：树不太大，训练快，内存小）
 LGBM_PARAMS = {
@@ -135,7 +139,7 @@ class TwoStageModel:
     def predict_pipeline(
         self,
         drive_features: pd.DataFrame,
-        intermediate_override: Optional[pd.DataFrame] = None
+        intermediate_override: Optional[pd.DataFrame] = None,
     ) -> Dict:
         """
         完整两段推理：驱动特征 → 中间状态 → 结果指标。
@@ -156,8 +160,13 @@ class TwoStageModel:
             intermediate_pred = self.predict_intermediate(drive_features)
 
         result_pred = self.predict_result(
-            pd.concat([drive_features.reset_index(drop=True),
-                       intermediate_pred.reset_index(drop=True)], axis=1)
+            pd.concat(
+                [
+                    drive_features.reset_index(drop=True),
+                    intermediate_pred.reset_index(drop=True),
+                ],
+                axis=1,
+            )
         )
 
         return {
@@ -165,7 +174,9 @@ class TwoStageModel:
             "result": result_pred,
         }
 
-    def get_shap_importance(self, target_col: str = "power_factor", top_n: int = 15) -> pd.DataFrame:
+    def get_shap_importance(
+        self, target_col: str = "power_factor", top_n: int = 15
+    ) -> pd.DataFrame:
         """
         对指定目标列做SHAP特征重要性分析。
 
@@ -198,15 +209,20 @@ class TwoStageModel:
         explainer = shap.TreeExplainer(model)
         # 用训练数据的一个小样本（节省时间）
         dummy_X = pd.DataFrame(
-            np.random.randn(100, len(feature_cols)),
-            columns=feature_cols
+            np.random.randn(100, len(feature_cols)), columns=feature_cols
         )
         shap_values = explainer.shap_values(dummy_X)
 
-        importance = pd.DataFrame({
-            "feature": feature_cols,
-            "shap_importance": np.abs(shap_values).mean(axis=0)
-        }).sort_values("shap_importance", ascending=False).head(top_n)
+        importance = (
+            pd.DataFrame(
+                {
+                    "feature": feature_cols,
+                    "shap_importance": np.abs(shap_values).mean(axis=0),
+                }
+            )
+            .sort_values("shap_importance", ascending=False)
+            .head(top_n)
+        )
 
         return importance
 
@@ -214,13 +230,16 @@ class TwoStageModel:
         """保存两段模型到本地"""
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         with open(f"{save_dir}/two_stage_model.pkl", "wb") as f:
-            pickle.dump({
-                "model1": self.model1,
-                "model2": self.model2,
-                "model1_feature_cols": self.model1_feature_cols,
-                "model2_feature_cols": self.model2_feature_cols,
-                "eval_results": self.eval_results,
-            }, f)
+            pickle.dump(
+                {
+                    "model1": self.model1,
+                    "model2": self.model2,
+                    "model1_feature_cols": self.model1_feature_cols,
+                    "model2_feature_cols": self.model2_feature_cols,
+                    "eval_results": self.eval_results,
+                },
+                f,
+            )
         print(f"模型已保存到 {save_dir}/two_stage_model.pkl")
 
     def load(self, save_dir: str = "models/"):
@@ -232,7 +251,9 @@ class TwoStageModel:
         self.model1_feature_cols = data["model1_feature_cols"]
         self.model2_feature_cols = data["model2_feature_cols"]
         self.eval_results = data["eval_results"]
-        print(f"模型已加载：model1({len(self.model1)}个目标), model2({len(self.model2)}个目标)")
+        print(
+            f"模型已加载：model1({len(self.model1)}个目标), model2({len(self.model2)}个目标)"
+        )
 
     # ── 内部方法 ───────────────────────────────────────────────────
 
@@ -253,22 +274,32 @@ class TwoStageModel:
         for col in Y.columns:
             model = lgb.LGBMRegressor(**LGBM_PARAMS)
             model.fit(
-                X_train, Y_train[col],
+                X_train,
+                Y_train[col],
                 eval_set=[(X_test, Y_test[col])],
-                callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(period=-1)]
+                callbacks=[
+                    lgb.early_stopping(50, verbose=False),
+                    lgb.log_evaluation(period=-1),
+                ],
             )
             y_pred = model.predict(X_test)
             metrics[col] = {
                 "r2": round(r2_score(Y_test[col], y_pred), 4),
                 "mae": round(mean_absolute_error(Y_test[col], y_pred), 4),
-                "mape": round(mean_absolute_percentage_error(Y_test[col], y_pred) * 100, 2),
+                "mape": round(
+                    mean_absolute_percentage_error(Y_test[col], y_pred) * 100, 2
+                ),
             }
             models[col] = model
-            print(f"  [{tag}] {col}: R²={metrics[col]['r2']}, MAE={metrics[col]['mae']}, MAPE={metrics[col]['mape']}%")
+            print(
+                f"  [{tag}] {col}: R²={metrics[col]['r2']}, MAE={metrics[col]['mae']}, MAPE={metrics[col]['mape']}%"
+            )
 
         return {"models": models, "metrics": metrics}
 
-    def _align_features(self, X: pd.DataFrame, expected_cols: List[str]) -> pd.DataFrame:
+    def _align_features(
+        self, X: pd.DataFrame, expected_cols: List[str]
+    ) -> pd.DataFrame:
         """确保推理时的特征列和训练时一致，缺失列填0"""
         for col in expected_cols:
             if col not in X.columns:
